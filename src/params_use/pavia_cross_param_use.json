@@ -1,7 +1,7 @@
 {
     "data": {
         "data_sign": "Pavia",
-        "data_file": "Pavia_10",
+        "data_file": "Pavia_5",
         "dump": false,
         "use_dump": false,
         "diffusion_sign": false,
@@ -24,7 +24,7 @@
         "heads": 20
     },
     "train": {
-        "epochs": 100,
+        "epochs": 300,
         "lr": 0.001,
         "weight_decay": 0,
         "temp": 20

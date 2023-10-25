@@ -14,7 +14,7 @@ import os, sys
 """ Training dataset"""
 
 class DataSetIter(torch.utils.data.Dataset):
-    def __init__(self, _base_img, _base_labels, _index2pos, _margin, _patch_size, _append_dim) -> None:
+    def __init__(self, _base_img, _base_labels, _index2pos, _margin, _patch_size, _append_dim, random_roate=True) -> None:
         self.base_img = _base_img #全量数据包括margin (145+2margin * 145+2margin * spe)
         self.base_labels = _base_labels #全量数据无margin (145 * 145)
         self.index2pos = _index2pos #训练数据 index -> (x, y) 对应margin后base_img的中心点坐标
@@ -23,10 +23,18 @@ class DataSetIter(torch.utils.data.Dataset):
         self.margin = _margin
         self.patch_size = _patch_size
         self.append_dim = _append_dim
+
+        self.random_rotate = random_roate
     
     def __getitem__(self, index):
         start_x, start_y = self.index2pos[index]
         patch = self.base_img[start_x:start_x+2*self.margin+1 , start_y:start_y+2*self.margin+1,:]
+        if self.random_rotate:
+            temp = patch
+            for i in range(np.random.randint(0,4)):
+                temp = np.transpose(temp, (1, 0, 2))  # 转置操作
+                temp = np.flipud(temp)  # 垂直翻转操作 
+            patch = temp
         if self.append_dim:
             patch = np.expand_dims(patch, 0) # [channel=1, h, w, spe]
             patch = patch.transpose((0,3,1,2)) # [c, spe, h, w]
@@ -34,7 +42,7 @@ class DataSetIter(torch.utils.data.Dataset):
             patch = patch.transpose((2, 0, 1)) #[spe, h, w]
         label = self.base_labels[start_x, start_y] - 1
         # print(index, patch.shape, start_x, start_y, label)
-        return torch.FloatTensor(patch), torch.LongTensor(label.reshape(-1))[0]
+        return torch.FloatTensor(patch.copy()), torch.LongTensor(label.reshape(-1))[0]
 
     def __len__(self):
         return self.size

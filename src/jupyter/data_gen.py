@@ -57,11 +57,13 @@ def gen(data_sign, train_num_per_class, data_path_prefix, max_percent=0.5):
 
 
 def run():
-    #signs = ['Indian', 'Pavia', 'Houston', 'Salinas']
-    #signs = ['Salinas']
-    signs = ['Indian']
+    signs = ['Indian', 'Pavia', 'Houston', 'Salinas']
+    # signs = ['Salinas']
+    # signs = ['Indian']
+    # signs = ['Houston']
     data_path_prefix = '../../data'
-    train_num_per_class_list = [10, 20, 30, 40, 50, 60, 70, 80]
+    train_num_per_class_list = [5, 15, 25]
+    # train_num_per_class_list = [30]
     for data_sign in signs:
         for train_num_per_class in train_num_per_class_list:
             save_path = '../../data/%s/%s_%s_split.mat' %(data_sign, data_sign, train_num_per_class)

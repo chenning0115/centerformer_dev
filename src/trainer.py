@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from models import cross_transformer as cross_transformer
+# from models import cross_transformer_indian_best as cross_transformer
 from models import transformer_pavia
 from models import conv1d
 from models import conv2d

@@ -1,5 +1,6 @@
 import PIL
 import time, json
+import numpy as np
 import torch
 import torchvision
 import torch.nn.functional as F
@@ -152,11 +153,21 @@ class Transformer(nn.Module):
                 Residual(LayerNormalize(dim, MLP_Block(dim, mlp_dim, dropout=dropout)))
             ]))
 
+#    def forward(self, x, mask=None):
+#        for attention, mlp in self.layers:
+#            x = attention(x, mask=mask)  # go to attention
+#            x = mlp(x)  # go to MLP_Block
+#        return x
+
+
     def forward(self, x, mask=None):
+        x_center = []
         for attention, mlp in self.layers:
             x = attention(x, mask=mask)  # go to attention
             x = mlp(x)  # go to MLP_Block
-        return x
+            index = int(x.shape[1] // 2)
+            x_center.append(x[:,index,:])
+        return x, x_center 
 
 class CrossTransformer(nn.Module):
     def __init__(self, dim, heads, mlp_dim, drouput) -> None:
@@ -238,6 +249,8 @@ class HSINet(nn.Module):
         depth = net_params.get("depth", 1)
         heads = net_params.get("heads", 8)
         mlp_dim = net_params.get("mlp_dim", 8)
+        kernal = net_params.get('kernal', 3)
+        padding = net_params.get('padding', 1)
         dropout = net_params.get("dropout", 0)
         conv2d_out = 64
         dim = net_params.get("dim", 64)
@@ -250,11 +263,16 @@ class HSINet(nn.Module):
 
         self.local_trans_pixel = Transformer(dim=dim, depth=depth, heads=heads, dim_heads=dim_heads, mlp_dim=mlp_dim, dropout=dropout)
         self.new_image_size = image_size
-        self.pixel_pos_embedding = nn.Parameter(torch.randn(1, self.new_image_size+1, dim))
+
+        self.pixel_pos_embedding = nn.Parameter(torch.randn(self.new_image_size, dim))
+        self.pixel_pos_embedding_relative = nn.Parameter(torch.randn(self.new_image_size, dim))
         self.pixel_pos_scale = nn.Parameter(torch.ones(1) * 0.01)
+        # self.center_weight = nn.Parameter(torch.ones(depth, 1, 1) * 0.01)
+        self.center_weight = nn.Parameter(torch.ones(depth, 1, 1) * 0.01)
+
 
         self.conv2d_features = nn.Sequential(
-            nn.Conv2d(in_channels=self.spectral_size, out_channels=conv2d_out, kernel_size=(3, 3), padding=(1,1)),
+            nn.Conv2d(in_channels=self.spectral_size, out_channels=conv2d_out, kernel_size=(kernal, kernal), padding=(padding,padding)),
             nn.BatchNorm2d(conv2d_out),
             nn.ReLU(),
             # featuremap 是在这之后加一层channel上的压缩
@@ -282,6 +300,38 @@ class HSINet(nn.Module):
             nn.Linear(linear_dim, num_classes),
         )
 
+
+    def centerlize(self, x):
+        x = rearrange(x, 'b s h w-> b h w s')
+        b, h, w, s = x.shape
+        center_w = w // 2
+        center_h = h // 2
+        center_pixel = x[:,center_h, center_w, :]
+        center_pixel = torch.unsqueeze(center_pixel, 1)
+        center_pixel = torch.unsqueeze(center_pixel, 1)
+        x_pixel = x +  center_pixel
+        x_pixel = rearrange(x_pixel, 'b h w s-> b s h w')
+        return x_pixel
+        
+
+    def get_position_embedding(self, x, center_index, cls_token=False):
+        center_h, center_w = center_index
+        b, s, h, w = x.shape
+        pos_index = []
+        for i in range(h):
+            temp_index = []
+            for j in range(w):
+                temp_index.append(max(abs(i-center_h), abs(j-center_w)))
+            pos_index.append(temp_index[:])
+        pos_index = np.asarray(pos_index)
+        pos_index = pos_index.reshape(-1)
+        if cls_token:
+            pos_index = np.asarray([-1] + list(pos_index))
+        pos_emb = self.pixel_pos_embedding_relative[pos_index, :]
+        return pos_emb
+        
+
+
     def encoder_block(self, x):
         '''
         x: (batch, s, w, h), s=spectral, w=weigth, h=height
@@ -290,14 +340,11 @@ class HSINet(nn.Module):
 
         b, s, w, h = x_pixel.shape
         img = w * h
+        # x_pixel = self.centerlize(x_pixel)
         x_pixel = self.conv2d_features(x_pixel)
 
 
-        scale = self.senet(x_pixel)
-        # print('scale shape is ', scale.shape)
-        # print('pixel shape is ', x_pixel.shape)
-        # x_pixel = x_pixel * scale#(batch, image_size, dim)
-
+        pos_emb = self.get_position_embedding(x_pixel, (h//2, w//2), cls_token=False)
         #1. reshape
         x_pixel = rearrange(x_pixel, 'b s w h-> b (w h) s') # (batch, w*h, s)
 
@@ -305,17 +352,24 @@ class HSINet(nn.Module):
         # x_pixel = self.pixel_patch_embedding(x_pixel)
 
         #3. local transformer
-        cls_tokens_pixel = self.cls_token_pixel.expand(x_pixel.shape[0], -1, -1)
-        x_pixel = torch.cat((cls_tokens_pixel, x_pixel), dim = 1) #[b,image+1,dim]
-        x_pixel = x_pixel + self.pixel_pos_embedding[:,:] * self.pixel_pos_scale
+        # cls_tokens_pixel = self.cls_token_pixel.expand(x_pixel.shape[0], -1, -1)
+        # x_pixel = torch.cat((cls_tokens_pixel, x_pixel), dim = 1) #[b,image+1,dim]
         # x_pixel = x_pixel + self.pixel_pos_embedding[:,:] 
-        # x_pixel = self.dropout(x_pixel)
 
-        x_pixel = self.local_trans_pixel(x_pixel) #(batch, image_size+1, dim)
+        # x_pixel = x_pixel + torch.unsqueeze(self.pixel_pos_embedding[:,:],0) * self.pixel_pos_scale
+        x_pixel = x_pixel + torch.unsqueeze(pos_emb, 0)[:,:,:] * self.pixel_pos_scale
+        x_pixel = self.dropout(x_pixel)
 
-        logit_pixel = self.to_latent_pixel(x_pixel[:,0])
+        x_pixel, x_center_list = self.local_trans_pixel(x_pixel) #(batch, image_size+1, dim)
+
+        x_center_tensor = torch.stack(x_center_list, dim=0) # [depth, batch, dim] 
+        logit_pixel = torch.sum(x_center_tensor * self.center_weight, dim=0)
+
+        # logit_pixel = self.to_latent_pixel(x_pixel[:,0])
+        # logit_pixel = self.to_latent_pixel(x_center_list[-1])
 
         logit_x = logit_pixel 
+        
         reduce_x = torch.mean(x_pixel, dim=1)
         
         return logit_x, reduce_x
